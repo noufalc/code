@@ -43,16 +43,14 @@ static inline void timeNormalize(struct timespec *ts) {
 
 
 double final;
-const double T = 0.005;
-double t, y, yn1, err, errn1, errn2;
-double updatePID(SPid * pid, double error, double position)
+const double T = 0.01;
+double e, e_old, E,e_dot, duty;
+double updatePID(SPid * pid, double command, double position)
 {
-	double pTerm, dTerm, iTerm, pidSum;
-	yn1 = y;
-	errn2 = errn1;
-	errn1 = err;
-	err = error;
-	y = yn1 + pid->pGain * err * T + ((pid->dGain / T) * (err + errn2 - 2 * errn1)); 
+	e = command - position;
+	e_dot = e - e_old;
+	E = E + e;
+	duty = pid->pGain * e + pid->iGain * T * E + pid->dGain * e_dot / T;
 //	pTerm = pid->pGain * error;	// calculate the proportional term
 //								// calculate the integral state with appropriate limiting
 //	pid->iState += error;
@@ -62,13 +60,13 @@ double updatePID(SPid * pid, double error, double position)
 //	dTerm = pid->dGain * (pid->dState - position);
 //	pid->dState = position;
 //	pidSum = pTerm + dTerm + iTerm;
-	if (y > 95.0)
-		y = 95.0;
-	else if(y < 30.0)
-		y = 30.0;
-	return y;
+	if (duty > 95.0)
+		duty = 95.0;
+	else if(duty < 30.0)
+		duty = 30.0;
+	e_old = e;
+	return duty;
 }
-
 
 
 
@@ -100,7 +98,7 @@ int start_counter11()
 	int i;
 
 	dev_fd = open("/dev/mem", O_RDWR | O_SYNC);
-	if (dev_fd == -1) 
+	if (dev_fd == -1)
 	{
 		printf("Can not opem /dev/mem.");
 		return -1;
@@ -109,7 +107,7 @@ int start_counter11()
     // comparing to GPIO/gpio.c, (unsigned int *) is added here
     // so it then goes into int space and the offset (@char) must be devided by 4 (@int)
 	PinConfig = (unsigned int *) mmap(NULL, 0x300, PROT_READ | PROT_WRITE, MAP_SHARED, dev_fd, CM_CLOCK_BASE);
-	testValue = *(volatile unsigned int*)(PinConfig+CM_CLKSEL_CORE/4);
+	//testValue = *(volatile unsigned int*)(PinConfig+CM_CLKSEL_CORE/4);
 	CurValue = *(volatile unsigned int*)(PinConfig+CM_CLKSEL_CORE/4);
 //	printf("The curvalue is CurValue %x\n", (unsigned int) testValue);
 	CurValue &= 0xffffff7f;
@@ -136,10 +134,10 @@ int start_counter11()
 	PinConfig=(unsigned int *) mmap(NULL, 0x200, PROT_READ | PROT_WRITE, MAP_SHARED,dev_fd, 0x48002000);
 	// Set PWM function on pin: GPIO_56, EMA-product-board GPMC_nCS5, DM3730 spec page 2428
 	// division by 4 is necessary because the size of one element of "unsigned int" is 4 bytes, which corresponds to the size of control registers
-	CurValue=*(volatile unsigned int*)(PinConfig+0x178/4); 
+	CurValue=*(volatile unsigned int*)(PinConfig+0x178/4);
 	CurValue &= 0xffff0000;
 	/* Timer 10: mode 2 - gpt_10_pwm_evt, PullUp selected, PullUp/Down enabled, Input enable value for pad_x */
-	CurValue |= 0x0000011A; 
+	CurValue |= 0x0000011A;
 	*(volatile unsigned int*)(PinConfig+0x178/4) = CurValue; //PIN CONFIGURED AS BIDIRECTIONAL
 	munmap(PinConfig, 0x200);
 	gpt11=(unsigned int *) mmap(NULL, 0x10000, PROT_READ | PROT_WRITE, MAP_SHARED,dev_fd, 0x48088000);
@@ -193,26 +191,26 @@ double get_speed(double duty_cycle, double reftime)
 
 unsigned int pwm_calc_resolution(int pwm_frequency, int clock_frequency)
 {
-    float pwm_period = 1.0 / pwm_frequency;
-    float clock_period = 1.0 / clock_frequency;
-    return (unsigned int) (pwm_period / clock_period);
+    return (unsigned int) (clock_frequency / pwm_frequency);
 }
 
-void pwm_config_timer(unsigned int *gpt, unsigned int resolution, float duty_cycle){
-	duty_cycle = duty_cycle/100;
+void pwm_config_timer(unsigned int *gpt, unsigned int resolution, float duty_cycle)
+{
 	unsigned long counter_start = 0xffffffff - resolution;
-	unsigned long dc = 0xffffffff - ((unsigned long) (resolution * duty_cycle));
-	
+	unsigned long dc = 0xffffffff - ((unsigned long) (resolution * duty_cycle / 100.0));
+
     // Edge condition: the duty cycle is set within two units of the overflow
     // value.  Loading the register with this value shouldn't be done (TRM 16.2.4.6).
-    if (0xffffffff - dc <= 2) {
+    if (0xffffffff - dc <= 2)
+	{
         dc = 0xffffffff - 2;
     }
 	//printf("%x\n", dc);
     // Edge condition: TMAR will be set to within two units of the overflow
     // value.  This means that the resolution is extremely low, which doesn't
     // really make sense, but whatever.
-    if (0xffffffff - counter_start <= 2) {
+    if (0xffffffff - counter_start <= 2)
+	{
         counter_start = 0xffffffff - 2;
     }
 
@@ -231,7 +229,8 @@ void pwm_config_timer(unsigned int *gpt, unsigned int resolution, float duty_cyc
     );
 }
 
-int start_pwm(int frequency, int duty_cycle){
+int start_pwm(int frequency, int duty_cycle)
+{
 	int dev_fd;
 	unsigned int *PinConfig, *testValue;
 	unsigned int CurValue;
@@ -240,7 +239,8 @@ int start_pwm(int frequency, int duty_cycle){
 	int i;
 
 	dev_fd = open("/dev/mem", O_RDWR | O_SYNC);
-	if (dev_fd == -1) {
+	if (dev_fd == -1)
+	{
 		printf("Can not opem /dev/mem.");
 		return -1;
 	}
@@ -248,7 +248,7 @@ int start_pwm(int frequency, int duty_cycle){
     // comparing to GPIO/gpio.c, (unsigned int *) is added here
     // so it then goes into int space and the offset (@char) must be devided by 4 (@int)
 	PinConfig = (unsigned int *) mmap(NULL, 0x300, PROT_READ | PROT_WRITE, MAP_SHARED, dev_fd, CM_CLOCK_BASE);
-	testValue = (volatile unsigned int*)(PinConfig+CM_CLKSEL_CORE/4);
+	//testValue = (volatile unsigned int*)(PinConfig+CM_CLKSEL_CORE/4);
 	CurValue = *(volatile unsigned int*)(PinConfig+CM_CLKSEL_CORE/4);
 //	printf("The curvalue is CurValue %x\n", testValue);
 	CurValue &= 0xffffffbf;
@@ -275,10 +275,10 @@ int start_pwm(int frequency, int duty_cycle){
 	PinConfig=(unsigned int *) mmap(NULL, 0x200, PROT_READ | PROT_WRITE, MAP_SHARED,dev_fd, 0x48002000);
 	// Set PWM function on pin: GPIO_56, EMA-product-board GPMC_nCS5, DM3730 spec page 2428
 	// division by 4 is necessary because the size of one element of "unsigned int" is 4 bytes, which corresponds to the size of control registers
-	CurValue=*(volatile unsigned int*)(PinConfig+0x174/4); 
+	CurValue=*(volatile unsigned int*)(PinConfig+0x174/4);
 	CurValue &= 0x0000ffff;
 	/* Timer 10: mode 2 - gpt_10_pwm_evt, PullUp selected, PullUp/Down enabled, Input enable value for pad_x */
-	CurValue |= 0x011A0000; 
+	CurValue |= 0x011A0000;
 	*(volatile unsigned int*)(PinConfig+0x174/4) = CurValue; //PIN CONFIGURED AS BIDIRECTIONAL
 
 	munmap(PinConfig, 0x200);
@@ -321,9 +321,9 @@ int main(int argc, char *argv[])
 	struct sched_param param;
 	int priority = 90;
 	SPid fanControl;
-	fanControl.pGain = 0.3; //Kc, Kc/Ti 
-	fanControl.iGain = 0.34;
-	fanControl.dGain = 0.0;
+	fanControl.pGain = 0.48; //Kc, Kc/Ti
+	fanControl.iGain = 2.9;
+	fanControl.dGain = 0.0198;
 	fanControl.iMax = 0.0;
 	fanControl.iMin = 0.0;
 	fanControl.iState  = 0;
@@ -356,15 +356,15 @@ int main(int argc, char *argv[])
 	printf("Set speed = %lf\n", final);
 //	output = initial;
 //	present_referecne = initial;
-	j = 15000;
+	j = 12000;
 	clock_gettime(0, &t);
 	t.tv_sec++;
 	interval = (int) NANOSEC_PER_SEC * T;
 	while (j--)
 	{
 //		present_referecne  = lpf(present_referecne, final);
-		clock_nanosleep(0, TIMER_ABSTIME, &t, NULL);	
-		new_duty = updatePID(&fanControl, final - present_speed, present_speed);
+		clock_nanosleep(0, TIMER_ABSTIME, &t, NULL);
+		new_duty = updatePID(&fanControl, final, present_speed);
 		start_pwm(25000, new_duty);
 		present_speed = get_speed(new_duty, (double)(clock.tv_sec));
 		t.tv_nsec += interval;
